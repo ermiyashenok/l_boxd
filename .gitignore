@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+venv/
+
+# Keep the scraper_outputs folder but ignore its contents
+scraper_outputs/*
+!scraper_outputs/.gitkeep
