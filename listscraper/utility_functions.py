@@ -1,6 +1,10 @@
 # Utility helper functions go here
 
 from bs4 import BeautifulSoup
+import csv
+import json
+import os
+from datetime import datetime
 
 LETTERBOXD_BASE = "https://letterboxd.com"
 
@@ -12,10 +16,6 @@ LETTERBOXD_BASE = "https://letterboxd.com"
 def build_film_url(slug: str) -> str:
     """
     Convert a film slug (e.g. 'parasite-2019') to a full Letterboxd URL.
-
-    Example:
-        build_film_url("parasite-2019")
-        → "https://letterboxd.com/film/parasite-2019/"
     """
     slug = slug.strip("/")
     return f"{LETTERBOXD_BASE}/film/{slug}/"
@@ -24,15 +24,7 @@ def build_film_url(slug: str) -> str:
 def build_histogram_url(film_url: str) -> str:
     """
     Return the ESI rating-histogram URL for a given film page URL.
-
-    The ESI endpoint returns a clean HTML fragment with per-half-star
-    counts in <li data-count="N"> elements.
-
-    Example:
-        build_histogram_url("https://letterboxd.com/film/parasite-2019/")
-        → "https://letterboxd.com/esi/film/parasite-2019/rating-histogram/"
     """
-    # Strip base, keep the /film/<slug>/ portion
     path = film_url.replace(LETTERBOXD_BASE, "").strip("/")
     return f"{LETTERBOXD_BASE}/esi/{path}/rating-histogram/"
 
@@ -40,11 +32,6 @@ def build_histogram_url(film_url: str) -> str:
 def build_details_url(film_url: str) -> str:
     """
     Return the /details/ URL for a given film page URL.
-    Useful for extracting crew/cast when the main page lazy-loads them.
-
-    Example:
-        build_details_url("https://letterboxd.com/film/parasite-2019/")
-        → "https://letterboxd.com/film/parasite-2019/details/"
     """
     return film_url.rstrip("/") + "/details/"
 
@@ -52,10 +39,6 @@ def build_details_url(film_url: str) -> str:
 def extract_slug_from_url(url: str) -> str:
     """
     Extracts the slug from a film URL.
-    
-    Example:
-        extract_slug_from_url("https://letterboxd.com/film/parasite-2019/")
-        → "parasite-2019"
     """
     return url.rstrip("/").split("/")[-1]
 
@@ -76,24 +59,10 @@ RATING_KEYS = [
 
 def parse_rating_histogram(html: str) -> dict[str, int]:
     """
-    Parse the ESI rating-histogram HTML fragment and return a dictionary
-    mapping each half-star rating to its integer count.
-
-    The histogram fragment contains <li> elements with a ``data-count``
-    attribute ordered from 0.5 stars to 5 stars.
-
-    Args:
-        html: Raw HTML string of the histogram fragment.
-
-    Returns:
-        dict with keys: half, one, one_half, two, two_half,
-                        three, three_half, four, four_half, five.
-        Missing bins default to 0.
+    Parse the ESI rating-histogram HTML fragment and return a dictionary.
     """
     soup = BeautifulSoup(html, "lxml")
-
     histogram: dict[str, int] = {key: 0 for key in RATING_KEYS}
-
     items = soup.find_all("li", attrs={"data-count": True})
 
     for index, li in enumerate(items):
@@ -112,23 +81,12 @@ def parse_rating_histogram(html: str) -> dict[str, int]:
 # Output helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-import csv
-import json
-import os
-from datetime import datetime
-
-
 def make_output_filename(list_url: str, fmt: str, output_dir: str = "scraper_outputs") -> str:
     """
     Build an output filename based on the list URL and current timestamp.
-
-    Example:
-        make_output_filename("https://letterboxd.com/dave/list/top-250/", "csv")
-        → "scraper_outputs/dave_top-250_20240515_143022.csv"
     """
     from urllib.parse import urlparse
     parts = [p for p in urlparse(list_url).path.strip("/").split("/") if p]
-    # parts: [username, 'list', list-name] or [username, 'watchlist']
     username = parts[0] if parts else "unknown"
     listname = parts[-1] if len(parts) > 1 else "list"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -137,48 +95,72 @@ def make_output_filename(list_url: str, fmt: str, output_dir: str = "scraper_out
     return os.path.join(output_dir, filename)
 
 
-def save_csv(films: list[dict], filepath: str) -> None:
-    """
-    Write a list of film dicts to a CSV file.
-
-    Flattens the 'cast' list to a semicolon-separated string.
-    Skips None entries silently.
-    """
-    films = [f for f in films if f is not None]
+def save_to_csv(films: list[dict], output_path: str, output_name: str) -> None:
+    os.makedirs(output_path, exist_ok=True)
+    filepath = os.path.join(output_path, f"{output_name}.csv")
+    
     if not films:
-        print("Warning: no film data to save.")
+        print("Warning: No films to save.")
         return
 
-    # Build a flat fieldname list from the union of all keys
-    fieldnames = list(dict.fromkeys(k for f in films for k in f.keys()))
-
-    with open(filepath, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+    fieldnames = [
+        "title", "year", "director", "cast", "average_rating", "rating_count",
+        "fan_count", "half", "one", "one_half", "two", "two_half",
+        "three", "three_half", "four", "four_half", "five", "letterboxd_url"
+    ]
+    
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
+        
         for film in films:
-            row = dict(film)
-            # Flatten list fields
+            if not film:
+                continue
+            row = film.copy()
+            
             if isinstance(row.get("cast"), list):
-                row["cast"] = "; ".join(row["cast"])
-            if isinstance(row.get("rating_histogram"), dict):
-                row["rating_histogram"] = json.dumps(row["rating_histogram"])
+                row["cast"] = "|".join(row["cast"])
+                
+            hist = row.get("rating_histogram") or {}
+            for k in RATING_KEYS:
+                row[k] = hist.get(k, 0)
+                if row[k] is None:
+                    row[k] = 0
+                    
             writer.writerow(row)
+            
+    print(f"Saved CSV to {filepath}")
 
-    print(f"Saved {len(films)} films → {filepath}")
 
-
-def save_json(films: list[dict], filepath: str) -> None:
-    """
-    Write a list of film dicts to a pretty-printed JSON file.
-    Skips None entries silently.
-    """
-    films = [f for f in films if f is not None]
+def save_to_json(films: list[dict], output_path: str, output_name: str) -> None:
+    os.makedirs(output_path, exist_ok=True)
+    filepath = os.path.join(output_path, f"{output_name}.json")
+    
     if not films:
-        print("Warning: no film data to save.")
+        print("Warning: No films to save.")
         return
+        
+    valid_films = [f for f in films if f]
+    
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(valid_films, f, indent=2, ensure_ascii=False)
+        
+    print(f"Saved JSON to {filepath}")
 
-    with open(filepath, "w", encoding="utf-8") as fh:
-        json.dump(films, fh, ensure_ascii=False, indent=2)
 
-    print(f"Saved {len(films)} films → {filepath}")
-
+def concat_films(list_of_film_lists: list[list[dict]]) -> list[dict]:
+    """
+    Takes a list of lists of film dictionaries.
+    Flattens them and deduplicates by letterboxd_url.
+    """
+    flattened = []
+    seen = set()
+    
+    for sublist in list_of_film_lists:
+        for film in sublist:
+            if film and film.get("letterboxd_url"):
+                url = film["letterboxd_url"]
+                if url not in seen:
+                    seen.add(url)
+                    flattened.append(film)
+    return flattened

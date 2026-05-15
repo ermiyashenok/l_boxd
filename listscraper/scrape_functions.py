@@ -1,21 +1,33 @@
 # Core scraping functions go here
 
 import time
+import threading
 import requests
+import concurrent.futures
 from bs4 import BeautifulSoup
 from pprint import pprint
+from tqdm import tqdm
 
 from listscraper.utility_functions import build_film_url, build_histogram_url, parse_rating_histogram
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
+_request_lock = threading.Lock()
+_last_request_time = 0.0
 
 def _get(url: str) -> BeautifulSoup | None:
     """
     Shared GET helper. Returns a BeautifulSoup object or None on failure.
-    Sleeps 0.1 s before every request to be polite to the server.
+    Uses a threading lock to ensure at least 0.1s between requests globally.
     """
-    time.sleep(0.1)
+    global _last_request_time
+    with _request_lock:
+        now = time.time()
+        elapsed = now - _last_request_time
+        if elapsed < 0.1:
+            time.sleep(0.1 - elapsed)
+        _last_request_time = time.time()
+        
     try:
         response = requests.get(url, headers=HEADERS, timeout=15)
         if response.status_code != 200:
@@ -269,6 +281,44 @@ def get_all_film_urls(base_url: str, page_range: tuple[int, int] | None = None) 
     # Deduplicate while preserving order
     deduplicated_urls = list(dict.fromkeys(all_urls))
     return deduplicated_urls
+
+
+def scrape_all_films(film_urls: list[str], thread_count: int) -> list[dict]:
+    """
+    Takes a list of film URLs and a max thread count.
+    Scrapes all URLs concurrently and returns a list of film dictionaries in the same order.
+    """
+    results_dict = {}
+    failed_count = 0
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=thread_count) as executor:
+        # Submit all tasks and map futures to their original index
+        future_to_index = {
+            executor.submit(scrape_film, url): i 
+            for i, url in enumerate(film_urls)
+        }
+        
+        with tqdm(total=len(film_urls), desc="Scraping films", unit="film") as pbar:
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                try:
+                    result = future.result()
+                    if result is None:
+                        failed_count += 1
+                    else:
+                        results_dict[index] = result
+                except Exception as e:
+                    print(f"Exception during scrape: {e}")
+                    failed_count += 1
+                finally:
+                    pbar.update(1)
+                    
+    if failed_count > 0:
+        print(f"{failed_count} films could not be scraped and were skipped")
+        
+    # Reconstruct list in original order, omitting Nones
+    ordered_results = [results_dict[i] for i in range(len(film_urls)) if i in results_dict]
+    return ordered_results
 
 
 # ──────────────────────────────────────────────────────────────────────────────
