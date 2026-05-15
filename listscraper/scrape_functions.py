@@ -53,17 +53,34 @@ def get_film_urls(list_url: str, page_number: int) -> tuple[list[str], bool]:
 
     film_urls: list[str] = []
 
-    # Films live in <li> elements with data-film-slug inside <ul class="poster-list">
-    poster_list = soup.find("ul", class_="poster-list")
-    if poster_list:
-        for li in poster_list.find_all("li", attrs={"data-film-slug": True}):
-            slug = li["data-film-slug"].strip("/")
+    # Films live in <div> elements with data-target-link or data-film-slug inside <ul class="poster-list">
+    # Let's use select for flexibility:
+    for div in soup.select("li .react-component, li div[data-target-link], li div[data-film-slug]"):
+        slug = ""
+        if div.get("data-item-slug"):
+            slug = div["data-item-slug"]
+        elif div.get("data-target-link"):
+            slug = div["data-target-link"].strip("/").split("/")[-1]
+        elif div.get("data-film-slug"):
+            slug = div["data-film-slug"]
+            
+        if slug:
             film_urls.append(build_film_url(slug))
-    else:
-        # Fallback: search whole page for any <li data-film-slug>
-        for li in soup.find_all("li", attrs={"data-film-slug": True}):
-            slug = li["data-film-slug"].strip("/")
-            film_urls.append(build_film_url(slug))
+
+    if not film_urls:
+        # Fallback: search whole page
+        for div in soup.select("div[data-target-link], div[data-film-slug], div[data-item-slug]"):
+            slug = ""
+            if div.get("data-item-slug"):
+                slug = div["data-item-slug"]
+            elif div.get("data-target-link"):
+                slug = div["data-target-link"].strip("/").split("/")[-1]
+            elif div.get("data-film-slug"):
+                slug = div["data-film-slug"]
+            
+            if slug:
+                film_urls.append(build_film_url(slug))
+
 
     # Detect next page
     has_next_page = soup.find("a", class_="next") is not None
@@ -209,6 +226,49 @@ def _extract_cast(soup: BeautifulSoup, top_n: int = 5) -> list[str]:
         names = [a.get_text(strip=True) for a in cast_div.find_all("a")]
         return names[:top_n]
     return []
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. get_all_film_urls
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_all_film_urls(base_url: str, page_range: tuple[int, int] | None = None) -> list[str]:
+    """
+    Takes a cleaned, validated Letterboxd list URL and an optional page_range (start, end).
+    Fetches all film URLs across pages.
+    """
+    from listscraper.checkimport_functions import detect_url_type
+    
+    url_type = detect_url_type(base_url)
+    print(f"Detected URL type: {url_type}")
+    
+    if url_type == "unknown":
+        print("Warning: URL type is 'unknown'. Attempting to scrape as a list fallback.")
+        
+    start_page = 1
+    end_page = float('inf')
+    if page_range:
+        start_page, end_page = page_range
+        
+    all_urls = []
+    current_page = start_page
+    
+    while current_page <= end_page:
+        urls, has_next = get_film_urls(base_url, current_page)
+        
+        if not urls and current_page > 1:
+            # Assume pagination has ended and stop gracefully
+            break
+            
+        print(f"Page {current_page}: found {len(urls)} films")
+        all_urls.extend(urls)
+        
+        if not has_next:
+            break
+            
+        current_page += 1
+        
+    # Deduplicate while preserving order
+    deduplicated_urls = list(dict.fromkeys(all_urls))
+    return deduplicated_urls
 
 
 # ──────────────────────────────────────────────────────────────────────────────

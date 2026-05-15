@@ -49,6 +49,17 @@ def build_details_url(film_url: str) -> str:
     return film_url.rstrip("/") + "/details/"
 
 
+def extract_slug_from_url(url: str) -> str:
+    """
+    Extracts the slug from a film URL.
+    
+    Example:
+        extract_slug_from_url("https://letterboxd.com/film/parasite-2019/")
+        → "parasite-2019"
+    """
+    return url.rstrip("/").split("/")[-1]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Rating histogram parser
 # ──────────────────────────────────────────────────────────────────────────────
